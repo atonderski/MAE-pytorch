@@ -331,28 +331,30 @@ def main(args, ds_init):
                 new_dict[key] = checkpoint_model[key]
         checkpoint_model = new_dict
 
-        # interpolate position embedding
-        if 'pos_embed' in checkpoint_model:
-            pos_embed_checkpoint = checkpoint_model['pos_embed']
-            embedding_size = pos_embed_checkpoint.shape[-1]
+        # Maybe interpolate position embedding
+        old_n_positions = int((224/16)**2)
+        if model.pos_embed.shape[1] != old_n_positions:
+            embedding_size = model.pos_embed.shape[-1]
+            old_pos_embed = modeling_finetune.get_sinusoid_encoding_table(old_n_positions, embedding_size)
             num_patches = model.patch_embed.num_patches
             num_extra_tokens = model.pos_embed.shape[-2] - num_patches
+            assert num_extra_tokens == 0, "No support for class tokens"
             # height (== width) for the checkpoint position embedding
-            orig_size = int((pos_embed_checkpoint.shape[-2] - num_extra_tokens) ** 0.5)
+            orig_size = int((old_pos_embed.shape[-2] - num_extra_tokens) ** 0.5)
             # height (== width) for the new position embedding
             new_size = int(num_patches ** 0.5)
             # class_token and dist_token are kept unchanged
             if orig_size != new_size:
                 print("Position interpolate from %dx%d to %dx%d" % (orig_size, orig_size, new_size, new_size))
-                extra_tokens = pos_embed_checkpoint[:, :num_extra_tokens]
+                extra_tokens = old_pos_embed[:, :num_extra_tokens]
                 # only the position tokens are interpolated
-                pos_tokens = pos_embed_checkpoint[:, num_extra_tokens:]
+                pos_tokens = old_pos_embed[:, num_extra_tokens:]
                 pos_tokens = pos_tokens.reshape(-1, orig_size, orig_size, embedding_size).permute(0, 3, 1, 2)
                 pos_tokens = torch.nn.functional.interpolate(
                     pos_tokens, size=(new_size, new_size), mode='bicubic', align_corners=False)
                 pos_tokens = pos_tokens.permute(0, 2, 3, 1).flatten(1, 2)
                 new_pos_embed = torch.cat((extra_tokens, pos_tokens), dim=1)
-                checkpoint_model['pos_embed'] = new_pos_embed
+                model.pos_embed = new_pos_embed
 
         utils.load_state_dict(model, checkpoint_model, prefix=args.model_prefix)
         # model.load_state_dict(checkpoint_model, strict=False)
