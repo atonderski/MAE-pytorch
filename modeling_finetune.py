@@ -128,17 +128,15 @@ class Block(nn.Module):
         else:
             self.gamma_1, self.gamma_2 = None, None
 
-    def forward(self, x, return_attention=False):
+    def forward(self, x):
         y, attn = self.attn(self.norm1(x))
-        if return_attention:
-            return attn
         if self.gamma_1 is None:
             x = x + self.drop_path(y)
             x = x + self.drop_path(self.mlp(self.norm2(x)))
         else:
             x = x + self.drop_path(self.gamma_1 * y)
             x = x + self.drop_path(self.gamma_2 * self.mlp(self.norm2(x)))
-        return x
+        return x, attn
 
 
 class PatchEmbed(nn.Module):
@@ -218,7 +216,6 @@ class VisionTransformer(nn.Module):
 
         self.pos_drop = nn.Dropout(p=drop_rate)
 
-
         dpr = [x.item() for x in torch.linspace(0, drop_path_rate, depth)]  # stochastic depth decay rule
         self.blocks = nn.ModuleList([
             Block(
@@ -264,19 +261,8 @@ class VisionTransformer(nn.Module):
         self.head = nn.Linear(self.embed_dim, num_classes) if num_classes > 0 else nn.Identity()
 
     def get_last_selfattention(self, x):
-        x = self.patch_embed(x)
-        B, _, _ = x.size()
-        # cls_tokens = self.cls_token.expand(batch_size, -1, -1)  # stole cls_tokens impl from Phil Wang, thanks
-        # x = torch.cat((cls_tokens, x), dim=1)
-        if self.pos_embed is not None:
-            x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
-        x = self.pos_drop(x)
-        for i, blk in enumerate(self.blocks):
-            if i < len(self.blocks) - 1:
-                x = blk(x)
-            else:
-                # return attention of the last block
-                return blk(x, return_attention=True)
+        x, attn = self.forward_features(x)
+        return attn
 
     def forward_features(self, x):
         x = self.patch_embed(x)
@@ -288,20 +274,22 @@ class VisionTransformer(nn.Module):
             x = x + self.pos_embed.expand(B, -1, -1).type_as(x).to(x.device).clone().detach()
         x = self.pos_drop(x)
 
+        attn = None
         for blk in self.blocks:
-            x = blk(x)
+            x, attn = blk(x)
 
+        return x, attn
+
+    def forward(self, x):
+        x, attn = self.forward_features(x)
         x = self.norm(x)
         if self.fc_norm is not None:
             # return self.fc_norm(x[:, 1:].mean(1))
-            return self.fc_norm(x.mean(1))
+            x = self.fc_norm(x.mean(1))
         else:
-            return x[:, 0]
-
-    def forward(self, x):
-        x = self.forward_features(x)
+            x = x[:, 0]
         x = self.head(x)
-        return x
+        return x, attn
 
 @register_model
 def vit_small_patch16_224(pretrained=False, **kwargs):

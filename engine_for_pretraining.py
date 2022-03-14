@@ -16,6 +16,9 @@ import utils
 from einops import rearrange
 from timm.data.constants import IMAGENET_DEFAULT_MEAN, IMAGENET_DEFAULT_STD
 
+from yawyla_loss import yawyla_loss_func
+
+
 def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: torch.optim.Optimizer,
                     device: torch.device, epoch: int, loss_scaler, max_norm: float = 0, patch_size: int = 16, 
                     normlize_target: bool = True, log_writer=None, lr_scheduler=None, start_steps=None,
@@ -27,7 +30,7 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
     header = 'Epoch: [{}]'.format(epoch)
     print_freq = 10
 
-    loss_func = nn.MSELoss()
+    recon_loss_func = nn.MSELoss()
 
     for step, (batch, _) in enumerate(metric_logger.log_every(data_loader, print_freq, header)):
         # assign learning rate & weight decay for each step
@@ -60,12 +63,13 @@ def train_one_epoch(model: torch.nn.Module, data_loader: Iterable, optimizer: to
                 images_patch = rearrange(unnorm_images, 'b c (h p1) (w p2) -> b (h w) (p1 p2 c)', p1=patch_size, p2=patch_size)
 
             B, _, C = images_patch.shape
-            labels = images_patch[bool_masked_pos].reshape(B, -1, C)
+            recon_target = images_patch[bool_masked_pos].reshape(B, -1, C)
 
         with torch.cuda.amp.autocast():
-            outputs = model(images, bool_masked_pos)
-            loss = loss_func(input=outputs, target=labels)
-
+            recon, enc_feats, enc_attn = model(images, bool_masked_pos)
+            recon_loss = recon_loss_func(input=recon, target=recon_target)
+            yawyla_loss = yawyla_loss_func(enc_feats, enc_attn, weight_version='plain', loss_version='plain')
+            loss = recon_loss + yawyla_loss
         loss_value = loss.item()
 
         if not math.isfinite(loss_value):

@@ -100,16 +100,17 @@ class PretrainVisionTransformerEncoder(nn.Module):
         B, _, C = x.shape
         x_vis = x[~mask].reshape(B, -1, C) # ~mask means visible
 
+        attn = None
         for blk in self.blocks:
-            x_vis = blk(x_vis)
+            x_vis, attn = blk(x_vis)
 
         x_vis = self.norm(x_vis)
-        return x_vis
+        return x_vis, attn
 
     def forward(self, x, mask):
-        x = self.forward_features(x, mask)
+        x, attn = self.forward_features(x, mask)
         x = self.head(x)
-        return x
+        return x, attn
 
 class PretrainVisionTransformerDecoder(nn.Module):
     """ Vision Transformer with support for patch or hybrid CNN input stage
@@ -162,7 +163,7 @@ class PretrainVisionTransformerDecoder(nn.Module):
 
     def forward(self, x, return_token_num):
         for blk in self.blocks:
-            x = blk(x)
+            x, attn = blk(x)
 
         if return_token_num > 0:
             x = self.head(self.norm(x[:, -return_token_num:])) # only return the mask tokens predict pixels
@@ -260,8 +261,8 @@ class PretrainVisionTransformer(nn.Module):
 
     def forward(self, x, mask):
         
-        x_vis = self.encoder(x, mask) # [B, N_vis, C_e]
-        x_vis = self.encoder_to_decoder(x_vis) # [B, N_vis, C_d]
+        enc_feats, enc_attn = self.encoder(x, mask)  # [B, N_vis, C_e]
+        x_vis = self.encoder_to_decoder(enc_feats)  # [B, N_vis, C_d]
 
         B, N, C = x_vis.shape
         
@@ -274,7 +275,7 @@ class PretrainVisionTransformer(nn.Module):
         # notice: if N_mask==0, the shape of x is [B, N_mask, 3 * 16 * 16]
         x = self.decoder(x_full, pos_emd_mask.shape[1]) # [B, N_mask, 3 * 16 * 16]
 
-        return x
+        return x, enc_feats, enc_attn
 
 @register_model
 def pretrain_mae_small_patch16_224(pretrained=False, **kwargs):
